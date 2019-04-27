@@ -60,10 +60,13 @@ class Bistro
     else
       value = value.to_a.map(&:reverse).flatten if value.kind_of?(Hash)
       value = Array(value)
+
       self.class.validate_definition(value)
       @definition = value
     end
-    @size = @decode_format = @decode_name = nil
+
+    @size = @decode_types = @decode_formats =
+    @decode_names = @decode_counts = nil
   end
 
   def size
@@ -81,15 +84,27 @@ class Bistro
 
   def decode_to_array(data, num = 1)
     raise ArgumentError, "data cannot be nil" if data.nil?
-    @decode_format, @decode_names = self.class.prep_decode(@definition) if @decode_format.nil?
-    format = (num == 1) ? @decode_format : @decode_format * num
+    @decode_types, @decode_formats,
+    @decode_names, @decode_counts =
+      self.class.prep_decode(@definition) if @decode_formats.nil?
+
+    format = (num == 1) ? @decode_formats : @decode_formats * num
     return data.unpack(format)
   end
 
   def decoded_array_to_hash!(array)
     hash = {}
-    @decode_names.each do |k|
-      v = array.shift
+    @decode_names.each_with_index do |k,i|
+      c = @decode_counts[i].to_i
+      t = @decode_types[i]
+
+      v = nil
+      if !STRING_FORMATS.include?(t) && c != 1
+        v = 0.upto(c-1).collect { array.shift }
+      else
+        v = array.shift
+      end
+
       next if k.nil?
       hash[k] = v
     end
@@ -107,12 +122,15 @@ class Bistro
   def encode_hash(hash)
     data = ""
     @definition.each_slice(2) do |format, name|
-      raise "member not found: #{name}" unless name.nil? || hash.has_key?(name)
+      raise "member not found: #{name}" unless name.nil? ||
+                                               hash.has_key?(name)
+
       value = unless name.nil?
         hash[name]
       else
         STRING_FORMATS.include?(format[0, 1]) ? '0' : 0
       end
+
       data << [value].pack(format)
     end
     return data
@@ -151,14 +169,19 @@ class Bistro
   private
 
   def self.struct_by_definition(definition)
-    @@structs_by_definition[definition] ||= definition.kind_of?(self) ? definition : self.new(definition)
+    @@structs_by_definition[definition] ||= definition.kind_of?(self) ?
+                                            definition :
+                                   self.new(definition)
   end
 
   def self.validate_definition(definition)
-    raise "definition must be an array of format/name pairs" if definition.empty? || definition.length % 2 != 0
+    raise "definition must be an array of format/name pairs" if definition.empty? ||
+                                                                definition.length % 2 != 0
+
     definition.each_slice(2) do |format, _|
-      type, count = format[0, 1], format[1..-1]
-      modifier, modcount = count[0, 1], count[1..-1]
+             type, count = format[0, 1], format[1..-1]
+      modifier, modcount =  count[0, 1],  count[1..-1]
+
       validate_definition_entry_type(type)
       if valid_definition_entry_modifier?(modifier)
         validate_definition_endian_modifier(modifier, type)
@@ -171,7 +194,7 @@ class Bistro
 
   def self.validate_definition_entry_type(type)
     raise "unrecognized format: #{type}" unless SIZES.has_key?(type)
-    raise "unsupported format: #{type}" if SIZES[type].nil?
+    raise "unsupported format: #{type}"      if SIZES[type].nil?
     return true
   end
 
@@ -192,7 +215,8 @@ class Bistro
 
   def self.validate_definition_endian_modifier(modifier, type)
     if ENDIAN_MODIFIERS.include? modifier
-      raise "unsupported type attribute #{type} for endian modifier #{modifier}" unless ENDIAN_FORMATS.include? type
+      raise "unsupported type attribute #{type} "\
+            "for endian modifier #{modifier}" unless ENDIAN_FORMATS.include? type
       return true
     end
     false
@@ -200,11 +224,13 @@ class Bistro
 
   def self.get_size(definition)
     size = 0
+
     definition.each_slice(2) do |format, _|
-      type, count        = format[0, 1], format[1..-1]
-      modifier, modcount = count[0, 1], count[1..-1]
+             type, count = format[0, 1], format[1..-1]
+      modifier, modcount =  count[0, 1],  count[1..-1]
       count = modcount if valid_definition_entry_modifier?(modifier)
       count = count.empty? ? 1 : count.to_i
+
       size +=
         if BIT_FORMATS.include?(type)
           (count / 8.0).ceil
@@ -214,16 +240,28 @@ class Bistro
           count * SIZES[type]
         end
     end
+
     size
   end
 
   def self.prep_decode(definition)
     formats = ""
-    names = []
+      types = []
+      names = []
+     counts = []
+
     definition.each_slice(2) do |format, name|
+             type, count = format[0, 1], format[1..-1]
+      modifier, modcount =  count[0, 1],  count[1..-1]
+      count = modcount if valid_definition_entry_modifier?(modifier)
+      count =        1 if count.empty?
+
+        types << type
       formats << format
-      names << name
+        names << name
+       counts << count
     end
-    return formats, names
+
+    return types, formats, names, counts
   end
 end
